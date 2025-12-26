@@ -1,0 +1,181 @@
+networks:
+  lan:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 192.168.10.0/24
+          gateway: 192.168.10.1
+  
+  dmz:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 192.168.20.0/24
+          gateway: 192.168.20.1
+  
+  internet_interne:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 192.168.30.0/24
+          gateway: 192.168.30.1
+
+services:
+  # Routeur/Firewall avec 4 interfaces réseau
+  routerfw:
+    image: alpine:latest
+    container_name: RouterFW
+    hostname: routerfw
+    privileged: true
+    cap_add:
+      - NET_ADMIN
+      - NET_RAW
+    networks:
+      lan:
+        ipv4_address: 192.168.10.254
+      dmz:
+        ipv4_address: 192.168.20.254
+      internet_interne:
+        ipv4_address: 192.168.30.254
+    command: /bin/sh -c "
+      apk add --no-cache iptables tcpdump iproute2 bash nano &&
+      echo 'net.ipv4.ip_forward=1' >> /etc/sysctl.conf &&
+      sysctl -p &&
+      iptables -P FORWARD ACCEPT &&
+      iptables -t nat -A POSTROUTING -o eth0 -j MASQUERADE &&
+      tail -f /dev/null"
+    stdin_open: true
+    tty: true
+
+  # PC dans le LAN
+  pclan:
+    image: alpine:latest
+    container_name: PcLan
+    hostname: pclan
+    cap_add:
+      - NET_ADMIN
+    networks:
+      lan:
+        ipv4_address: 192.168.10.10
+    command: /bin/sh -c "
+      apk add --no-cache curl wget tcpdump iproute2 bash nano iputils nmap busybox-extras lftp openssh-client;
+      sleep 2;
+      ip route del default 2>/dev/null || true;
+      ip route add default via 192.168.10.254;
+      echo 'PcLan prêt! Route par défaut via 192.168.10.254';
+      tail -f /dev/null"
+    stdin_open: true
+    tty: true
+
+  # PC dans Internet-Interne
+  pcinternetinside:
+    image: alpine:latest
+    container_name: PcInternetInside
+    hostname: pcinternetinside
+    cap_add:
+      - NET_ADMIN
+    networks:
+      internet_interne:
+        ipv4_address: 192.168.30.10
+    command: /bin/sh -c "
+      apk add --no-cache curl wget tcpdump iproute2 bash nano iputils nmap busybox-extras;
+      sleep 2;
+      ip route del default 2>/dev/null || true;
+      ip route add default via 192.168.30.254;
+      echo 'PcInternetInside prêt! Route par défaut via 192.168.30.254';
+      tail -f /dev/null"
+    stdin_open: true
+    tty: true
+
+  # PC dans la DMZ
+  pcdmz:
+    image: alpine:latest
+    container_name: PcDmz
+    hostname: pcdmz
+    cap_add:
+      - NET_ADMIN
+    networks:
+      dmz:
+        ipv4_address: 192.168.20.10
+    command: /bin/sh -c "
+      apk add --no-cache openssh openssh-server curl wget tcpdump iproute2 bash nano iputils nmap busybox-extras;
+      ssh-keygen -A;
+      /usr/sbin/sshd;
+      ip route del default 2>/dev/null || true;
+      ip route add default via 192.168.20.254;
+      echo 'PcDmz prêt! Route par défaut via 192.168.20.254';
+      tail -f /dev/null"
+    stdin_open: true
+    tty: true
+
+  # Serveur FTP dans la DMZ 
+  ftp_server:
+    platform: linux/arm64
+    image: delfer/alpine-ftp-server
+    container_name: FTP_Server
+    hostname: ftp-server
+    networks:
+      dmz:
+        ipv4_address: 192.168.20.21
+    environment:
+      - USERS=ftpuser|ftppass
+      - ADDRESS=192.168.20.21
+    volumes:
+      - ftp_data:/home/ftpuser
+    restart: unless-stopped
+
+  # Serveur Apache dans la DMZ
+  apache_server:
+    image: httpd:2.4-alpine
+    container_name: Apache_Server
+    hostname: apache-server
+    networks:
+      dmz:
+        ipv4_address: 192.168.20.22
+    volumes:
+      - ./www/apache:/usr/local/apache2/htdocs/
+
+  # Serveur Nginx dans la DMZ
+  nginx_server:
+    image: nginx:alpine
+    container_name: Nginx_Server
+    hostname: nginx-server
+    networks:
+      dmz:
+        ipv4_address: 192.168.20.23
+    volumes:
+      - ./www/nginx:/usr/share/nginx/html/
+
+  # DVWA (Damn Vulnerable Web Application) dans la DMZ
+  dvwa:
+    image: ghcr.io/digininja/dvwa:latest
+    container_name: DVWA
+    hostname: dvwa
+    networks:
+      dmz:
+        ipv4_address: 192.168.20.24
+    environment:
+      - MYSQL_HOST=mysql_server
+      - MYSQL_DATABASE=dvwa
+      - MYSQL_USER=dvwa
+      - MYSQL_PASSWORD=dvwa
+
+  # Serveur MySQL dans la DMZ
+  mysql_server:
+    image: mariadb:10.5.8
+    container_name: MySQL_Server
+    hostname: mysql-server
+    networks:
+      dmz:
+        ipv4_address: 192.168.20.25
+    environment:
+      - MYSQL_ROOT_PASSWORD=rootpass
+      - MYSQL_DATABASE=dvwa
+      - MYSQL_USER=dvwa
+      - MYSQL_PASSWORD=dvwa
+    volumes:
+      - mysql_data:/var/lib/mysql
+
+volumes:
+  ftp_data:
+  mysql_data:
